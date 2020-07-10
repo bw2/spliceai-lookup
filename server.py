@@ -6,12 +6,14 @@ from flask_cors import CORS
 from spliceai.utils import Annotator, get_delta_scores
 
 ANNOTATOR = {
-    "grch37": Annotator(os.path.expanduser("hg19.fa"), "grch37"),
-    "grch38": Annotator(os.path.expanduser("hg38.fa"), "grch38"),
+    "37": Annotator(os.path.expanduser("hg19.fa"), "grch37"),
+    "38": Annotator(os.path.expanduser("hg38.fa"), "grch38"),
 }
 
 DISTANCE = 50  # maximum distance between the variant and gained/lost splice site, defaults to 50
 MASK = 0  # mask scores representing annotated acceptor/donor gain and unannotated acceptor/donor loss, defaults to 0
+
+SPLICE_AI_SCORE_FIELDS = "ALLELE|SYMBOL|DS_AG|DS_AL|DS_DG|DS_DL|DP_AG|DP_AL|DP_DG|DP_DL".split("|")
 
 app = Flask(__name__, template_folder='.')
 CORS(app)
@@ -46,13 +48,10 @@ class VariantRecord:
         return f"{self.chrom}-{self.pos}-{self.ref}-{self.alts[0]}"
 
 
-API_ROUTE = "/splice-ai/<genome_version>"
-EXAMPLE = f"For example: {API_ROUTE.replace('<genome_version>', 'grch37')}?variants='chr1:12345 A>G',chr2-12346-C-TG"
+EXAMPLE = f"For example: /?hg=38&variants='chr8:140300615 C>G'"
 
-@app.route(API_ROUTE, methods=['POST', 'GET'])
-def get_spliceai_scores(genome_version):
-    if genome_version not in ANNOTATOR.keys():
-        return f"Invalid genome version: {genome_version}. It should be {' or '.join(ANNOTATOR.keys())}\n", 400
+@app.route("/", methods=['POST', 'GET'])
+def get_spliceai_scores():
 
     # check params
     params = {}
@@ -62,15 +61,21 @@ def get_spliceai_scores(genome_version):
     if 'variants' not in params:
         params.update(request.get_json(force=True, silent=True) or {})
 
+    genome_version = params.get("hg")
+    if not genome_version:
+        return f'"hg" not specified. The URL must include hg=37 or hg=38. {EXAMPLE}\n', 400
+
+    if genome_version not in ("37", "38"):
+        return f'Invalid "hg" value: "{genome_version}". The value must be either "37" or "38". {EXAMPLE}\n', 400
+
     variants = params.get('variants')
     if not variants:
-        return f'"variants" arg not specified. This api expects a "variants" arg as either a GET or a POST parameter. {EXAMPLE}\n', 400
+        return f'"variants" not specified. The URL must include a "variants" arg. {EXAMPLE}\n', 400
 
     if isinstance(variants, str):
         variants = variants.split(",")
-
-    if not isinstance(variants, list):
-        return f'"variants" arg must be a comma-separated string or a json list. Instead found {type(variants)}: {variants}\n', 400
+    else:
+        return f'"variants" value must be a string rather than a {type(variants)}.\n', 400
 
     # parse and perform liftover
     results = []
@@ -82,25 +87,28 @@ def get_spliceai_scores(genome_version):
         try:
             chrom, pos, ref, alt = parse_variant(variant)
         except ValueError as e:
-            results.append(f"ERROR: {e}")
+            results.append({"variant": variant, "error": str(e)})
             continue
-            #return f'Unable to parse "{locus}": {str(e)}\n', 400
 
         record = VariantRecord(chrom, pos, ref, alt)
-        scores = get_delta_scores(record, ANNOTATOR[genome_version], DISTANCE, MASK)
+        try:
+            scores = get_delta_scores(record, ANNOTATOR[genome_version], DISTANCE, MASK)
+        except Exception as e:
+            results.append({"variant": variant, "error": f"{type(e)}: {e}"})
+            continue
+
         if len(scores) == 0:
-            results.append(f"ERROR: unable to compute scores for {variant}")
-        else:
-            results.append(scores)
+            results.append({"variant": variant, "error": f"unable to compute scores for {variant}"})
+            continue
+
+        parsed_scores = []
+        for score in scores:
+            parsed_scores.append(dict(zip(SPLICE_AI_SCORE_FIELDS, score.split("|"))))
+        results.append({"variant": variant, "scores": parsed_scores})
 
     return Response(json.dumps(results),  mimetype='application/json')
 
-
-@app.route('/', defaults={'path': ''})
-@app.route('/<path:path>')
-def catch_all(path):
-
-    return f"""<html>
+f"""<html>
 <head>
 <title>SpliceAI Lookup API</title>
 </head>
@@ -109,11 +117,11 @@ Welcome to the SpliceAI Lookup API. <br/>
 <br />
 The API can be queried via: <br />
 <br />
-GET  {API_ROUTE}?variants=[variant1],[variant2]... <br />
+GET  /?variants=[variant1],[variant2]... <br />
 <br/>
 or <br/>
 <br/>
-POST  /{API_ROUTE}<br />
+POST  /<br />
 {{variants: "[variant1],[variant2],[variant3]"}} <br/>
 <br/>
 {EXAMPLE} <br />
@@ -130,4 +138,4 @@ The API response is a json list that's the same length as the input list and has
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
+    app.run(debug=False, host='0.0.0.0', port=int(os.environ.get('PORT', 8080)))
