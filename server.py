@@ -3,12 +3,11 @@ import os
 import re
 from flask import Flask, request, Response
 from flask_cors import CORS
-
 from spliceai.utils import Annotator, get_delta_scores
 
 ANNOTATOR = {
-    "grch37": Annotator(os.path.expanduser("~/p1/ref/GRCh37/hg19.fa"), "grch37"),
-    "grch38": Annotator(os.path.expanduser("~/p1/ref/GRCh38/hg38.fa"), "grch38"),
+    "grch37": Annotator(os.path.expanduser("hg19.fa"), "grch37"),
+    "grch38": Annotator(os.path.expanduser("hg38.fa"), "grch38"),
 }
 
 DISTANCE = 50  # maximum distance between the variant and gained/lost splice site, defaults to 50
@@ -44,7 +43,7 @@ class VariantRecord:
         self.alts = [alt]
 
     def __repr__(self):
-        return f"{self.chrom}-{self.pos}-{self.ref}-{self.alt}"
+        return f"{self.chrom}-{self.pos}-{self.ref}-{self.alts[0]}"
 
 
 API_ROUTE = "/splice-ai/<genome_version>"
@@ -87,9 +86,8 @@ def get_spliceai_scores(genome_version):
             continue
             #return f'Unable to parse "{locus}": {str(e)}\n', 400
 
-        record = VariantRecord(f"chr{chrom}", pos, ref, alt)
+        record = VariantRecord(chrom, pos, ref, alt)
         scores = get_delta_scores(record, ANNOTATOR[genome_version], DISTANCE, MASK)
-        print(scores)
         if len(scores) == 0:
             results.append(f"ERROR: unable to compute scores for {variant}")
         else:
